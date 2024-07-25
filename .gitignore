@@ -18,3 +18,4 @@ build
 
 # Document AI
 document-ai-json/*.json
+document-ai-text/*.txt
