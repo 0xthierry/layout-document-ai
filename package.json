@@ -1,0 +1,33 @@
+{
+  "name": "spacial-representation-document-ai",
+  "version": "1.0.0",
+  "description": "Represent the OCR text from Google Document AI in a 2d array",
+  "main": "index.js",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "lint": "eslint src --ext .ts --fix",
+    "build": "tsup"
+  },
+  "license": "ISC",
+  "keywords": [
+    "google",
+    "documentai"
+  ],
+  "author": "Thierry Santos <thierrysantoos123@gmail.com>",
+  "devDependencies": {
+    "@types/node": "20.14.2",
+    "@typescript-eslint/eslint-plugin": "^7.13.0",
+    "@typescript-eslint/parser": "^7.13.0",
+    "eslint": "8.57.0",
+    "eslint-config-import": "^0.13.0",
+    "eslint-config-prettier": "^9.1.0",
+    "eslint-config-standard": "^17.1.0",
+    "eslint-plugin-import": "2.29.1",
+    "eslint-plugin-prettier": "^5.1.3",
+    "eslint-plugin-promise": "^6.2.0",
+    "prettier": "^3.3.2",
+    "tsup": "8.1.0",
+    "tsx": "4.14.0",
+    "typescript": "5.4.5"
+  }
+}

@@ -1,0 +1,20 @@
+# Dependencies
+node_modules
+
+# Database
+db/*.db
+
+# Environment
+.env
+.env.test
+.env.development
+
+# Build
+build
+.DS_Store
+
+# Documents
+*.pdf
+
+# Document AI
+document-ai-json/*.json
