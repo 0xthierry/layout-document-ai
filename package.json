@@ -1,7 +1,7 @@
 {
-  "name": "spacial-representation-document-ai",
+  "name": "layout-document-ai",
   "version": "1.0.0",
-  "description": "Represent the OCR text from Google Document AI in a 2d array",
+  "description": "Document AI preserving the original layout.",
   "main": "index.js",
   "scripts": {
     "dev": "tsx watch src/index.ts",
