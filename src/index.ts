@@ -13,6 +13,14 @@ const calculateAverageY = (
   return (topLeftY + bottomLeftY) / 2
 }
 
+const calculateAverageX = (
+  block: protos.google.cloud.documentai.v1.Document.Page.IBlock,
+): number => {
+  const topLeftX = block.layout?.boundingPoly?.normalizedVertices?.[0].x ?? 0
+  const bottomLeftX = block.layout?.boundingPoly?.normalizedVertices?.[3].x ?? 0
+  return (topLeftX + bottomLeftX) / 2
+}
+
 async function listJSONs(baseDir: string) {
   const files = await fs.readdir(baseDir)
   return files
@@ -38,10 +46,10 @@ function processJSON(document: ProcessDocumentResponse): string {
 
   // Sort blocks by bounding box positions
   const sortedBlocks = page.tokens?.slice().sort((a, b) => {
-    const aY = a.layout?.boundingPoly?.normalizedVertices?.[0]?.y || 0
-    const bY = b.layout?.boundingPoly?.normalizedVertices?.[0]?.y || 0
-    const aX = a.layout?.boundingPoly?.normalizedVertices?.[0]?.x || 0
-    const bX = b.layout?.boundingPoly?.normalizedVertices?.[0]?.x || 0
+    const aY = calculateAverageY(a)
+    const bY = calculateAverageY(b)
+    const aX = calculateAverageX(a)
+    const bX = calculateAverageX(b)
 
     if (Math.abs(aY - bY) < 0.01) {
       return aX - bX
@@ -86,12 +94,13 @@ function processJSON(document: ProcessDocumentResponse): string {
   }
 
   lines.forEach((line) => {
+    let lineText = ''
     line.forEach((block) => {
       if (block.layout) {
-        text += concatenateText(block.layout) + ' '
+        lineText += concatenateText(block.layout) + ' '
       }
     })
-    text = text.trim() + '\n'
+    text += lineText.trim() + '\n'
   })
 
   return text.trim()
