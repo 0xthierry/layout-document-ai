@@ -60,12 +60,14 @@ async function parseJSON(filePath: string) {
   return json as ProcessDocumentResponse
 }
 
-function processJSON(document: ProcessDocumentResponse): string {
-  if (!document || !document.pages || document.pages.length === 0) {
+function processPage(
+  document: ProcessDocumentResponse,
+  page: protos.google.cloud.documentai.v1.Document.IPage,
+): string {
+  if (!page) {
     return 'No pages found in the document.'
   }
 
-  const page = document.pages[0]
   const { width, height, unit } = page.dimension || { width: 0, height: 0 }
 
   console.log(`width: ${width}, height: ${height} ${unit}\n`)
@@ -152,6 +154,16 @@ function processJSON(document: ProcessDocumentResponse): string {
   })
 
   return text.trim()
+}
+
+function processJSON(document: ProcessDocumentResponse) {
+  if (!document || !document.pages || document.pages.length === 0) {
+    return 'No pages found in the document.'
+  }
+
+  return document.pages
+    .map((page) => processPage(document, page))
+    .join('\n---\n')
 }
 
 function isPunctuation(text: string): boolean {
