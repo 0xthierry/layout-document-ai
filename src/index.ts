@@ -17,6 +17,10 @@ async function parseJSON(filePath: string) {
   const json = JSON.parse(file)
   return json as ProcessDocumentResponse
 }
+
+/**
+ * Extract text for a token from Document AI's "textAnchor" offsets.
+ */
 function extractTextFromLayout(
   documentText: string,
   textAnchor:
@@ -24,9 +28,7 @@ function extractTextFromLayout(
     | null
     | undefined,
 ): string {
-  if (!textAnchor || !textAnchor.textSegments) {
-    return ''
-  }
+  if (!textAnchor || !textAnchor.textSegments) return ''
 
   let out = ''
   for (const segment of textAnchor.textSegments) {
@@ -37,192 +39,116 @@ function extractTextFromLayout(
   return out
 }
 
+// ----------------------------------------------------
+// Data structures
+// ----------------------------------------------------
+type Word = {
+  word: string
+  x0: number
+  originalYTop: number
+  originalYBottom: number
+  wordWidth: number
+}
+
+type Line = {
+  words: Word[]
+  top: number
+  bottom: number
+}
+
+// ----------------------------------------------------
+// Step 1: Process tokens => gather all words
+// ----------------------------------------------------
 function processTokens(
   document: ProcessDocumentResponse,
   page: protos.google.cloud.documentai.v1.Document.IPage,
-): [
-  {
-    word: string
-    x0: number
-    originalYTop: number
-    originalYBottom: number
-    wordWidth: number
-  }[],
-  number,
-  number,
-  number,
-] {
+): [Word[], number, number, number] {
   if (!page) {
     return [[], 0, 0, 0]
   }
 
-  // 1) Initialize
   let left = Infinity
   let right = -Infinity
   let rowHeight = page.dimension?.height || Infinity
-  const words: {
-    word: string
-    x0: number
-    originalYTop: number
-    originalYBottom: number
-    // y0: number
-    wordWidth: number
-  }[] = []
-  for (const token of page.lines ?? []) {
-    const layout = token.layout
-    if (!layout) {
-      continue
-    }
+  const words: Word[] = []
+
+  for (const line of page.lines ?? []) {
+    const layout = line.layout
+    if (!layout) continue
 
     const tokenText = extractTextFromLayout(document.text!, layout.textAnchor)
-    if (!tokenText) {
-      continue
-    }
+    if (!tokenText) continue
 
-    // 4) Extract bounding box
     const boundingPoly = layout.boundingPoly
-    if (!boundingPoly?.normalizedVertices || !page.dimension) {
-      // Could also handle non-normalized boundingPoly here
-      continue
-    }
+    if (!boundingPoly?.normalizedVertices || !page.dimension) continue
 
     const { width: pageWidth = 0, height: pageHeight = 0 } = page.dimension
 
-    // We'll assume the typical: top-left = 0, bottom-right = 2
-    const x0 = boundingPoly.normalizedVertices[0].x! * pageWidth!
-    const y0 = boundingPoly.normalizedVertices[0].y! * pageHeight!
-    const x1 = boundingPoly.normalizedVertices[2].x! * pageWidth!
-    const y1 = boundingPoly.normalizedVertices[2].y! * pageHeight!
+    // Typically top-left = 0, bottom-right = 2
+    const x0 = boundingPoly.normalizedVertices[0].x! * pageWidth
+    const y0 = boundingPoly.normalizedVertices[0].y! * pageHeight
+    const x1 = boundingPoly.normalizedVertices[2].x! * pageWidth
+    const y1 = boundingPoly.normalizedVertices[2].y! * pageHeight
 
-    // const errorProneY = (y0 + y1) / 2
+    const wWidth = x1 - x0
+    const wHeight = y1 - y0
 
-    const wordWidth = x1 - x0
-    const wordHeight = y1 - y0
-
-    if (rowHeight > wordHeight) {
-      rowHeight = wordHeight
+    // Track minimal rowHeight among words
+    if (wHeight > 0 && wHeight < rowHeight) {
+      rowHeight = wHeight
     }
 
-    // we use the bottom of the token as the row
-    // const oy = Math.round(Math.max(errorProneY))
-
-    // Track left and right extremes
-    if (x0 < left) {
-      left = x0
-    }
-    if (x1 > right) {
-      right = x1
-    }
+    // Update left and right extremes
+    if (x0 < left) left = x0
+    if (x1 > right) right = x1
 
     words.push({
       word: tokenText,
       x0,
       originalYTop: y0,
       originalYBottom: y1,
-      // y0: oy,
-      wordWidth,
+      wordWidth: wWidth,
     })
   }
-  // 5) Return the data for further layout processing
+
   return [words, left, right, rowHeight]
 }
 
-type Line = {
-  words: {
-    word: string
-    x0: number
-    originalYTop: number
-    originalYBottom: number
-    wordWidth: number
-  }[]
-}
+// ----------------------------------------------------
+// Step 2: Build lines by vertical overlap
+// ----------------------------------------------------
+function makeLinesWithIntersection(words: Word[]): Line[] {
+  const lines: Line[] = []
 
-function makeLinesWithIntersection(
-  words: {
-    word: string
-    x0: number
-    originalYTop: number
-    originalYBottom: number
-    wordWidth: number
-  }[],
-): {
-  words: {
-    word: string
-    x0: number
-    originalYTop: number
-    originalYBottom: number
-    wordWidth: number
-  }[]
-  top: number
-  bottom: number
-}[] {
-  /**
-   * We'll define each "line" as an object with:
-   *   {
-   *     words: Word[],      // the words that belong to this line
-   *     top: number,        // min of all originalYTop values in the line
-   *     bottom: number,     // max of all originalYBottom values in the line
-   *   }
-   * Then we decide if a new word belongs to an existing line by checking
-   * vertical overlap with that line's [top, bottom] interval.
-   */
-
-  const lines: {
-    words: {
-      word: string
-      x0: number
-      originalYTop: number
-      originalYBottom: number
-      wordWidth: number
-    }[]
-    top: number
-    bottom: number
-  }[] = []
-
-  // Sort words by their "originalYTop" so we process top-to-bottom
-  // (You could also sort by center or bottom—just be consistent.)
+  // Sort by top
   words.sort((a, b) => a.originalYTop - b.originalYTop)
 
   for (const w of words) {
-    // Try to find an existing line whose vertical interval intersects
-    // with the word's vertical range [originalYTop, originalYBottom].
     let foundLine: number | null = null
-    let overlapPercentage = 0
 
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i]
-      // Calculate the overlap between the word and the line
       const overlapTop = Math.max(line.top, w.originalYTop)
       const overlapBottom = Math.min(line.bottom, w.originalYBottom)
       const overlap = overlapBottom - overlapTop
-
       const wordHeight = w.originalYBottom - w.originalYTop
-      if (wordHeight <= 0) continue // Prevent division by zero or negative heights
+      if (wordHeight <= 0) continue
 
-      overlapPercentage = Math.max(
-        0,
-        Math.min(100, Math.round((overlap / wordHeight) * 100)),
-      )
-
-      // Check if overlap is greater than or equal to 70%
-      if (overlapPercentage >= 65) {
+      const overlapPct = (overlap / wordHeight) * 100
+      if (overlapPct >= 65) {
         foundLine = i
         break
       }
     }
 
     if (foundLine !== null) {
-      // Update existing line
-      lines[foundLine].words.push(w)
-      // Extend the line's bounding box if needed
-      if (w.originalYTop < lines[foundLine].top) {
-        lines[foundLine].top = w.originalYTop
-      }
-      if (w.originalYBottom > lines[foundLine].bottom) {
-        lines[foundLine].bottom = w.originalYBottom
-      }
+      // Merge into existing line
+      const line = lines[foundLine]
+      line.words.push(w)
+      // Update bounding box
+      if (w.originalYTop < line.top) line.top = w.originalYTop
+      if (w.originalYBottom > line.bottom) line.bottom = w.originalYBottom
     } else {
-      // Create a new line
       lines.push({
         words: [w],
         top: w.originalYTop,
@@ -231,139 +157,75 @@ function makeLinesWithIntersection(
     }
   }
 
-  // Sort lines by their top coordinate (so top lines come first)
+  // Final sorting
   lines.sort((a, b) => a.top - b.top)
-
-  // Within each line, sort words by x0 so that they appear left-to-right
-  for (const line of lines) {
-    line.words.sort((a, b) => a.x0 - b.x0)
-    console.log(line.words)
+  for (const ln of lines) {
+    ln.words.sort((a, b) => a.x0 - b.x0)
   }
 
   return lines
 }
 
-/**
- * Compute a global "slot" size and also store min/median/max word widths per line.
- *
- * @param lines the lines you have from makeLinesWithIntersection
- * @param left the minimal x0 on the page
- * @param right the maximal x1 on the page
- * @returns [globalSlot, lineSlots] where lineSlots[lineIndex] = [min, median, max]
- */
-function computeSlots(
-  lines: Line[],
-  left: number,
-  right: number,
-): [number, Array<[number, number, number]>] {
-  // A first guess for the slot is the total used_width
-  const usedWidth = right - left
-  let globalSlot = usedWidth
-  console.log(`usedWidth: ${usedWidth}`)
-  console.log(`left: ${left} right: ${right}`)
-  // We'll store min/median/max for each line
-  const lineSlots: Array<[number, number, number]> = []
-
-  // For each line, gather widths and compute min, median, max
-  lines.forEach((line, i) => {
-    if (line.words.length < 1) {
-      // if no words, just skip
-      lineSlots[i] = [1, 1, 1]
-      return
-    }
-    // gather all word widths
-    const widths = line.words.map((w) => w.wordWidth).sort((a, b) => a - b)
-    const minW = widths[0]
-    const maxW = widths[widths.length - 1]
-    console.log(`minW: ${minW} maxW: ${maxW}`)
-    // find median
-    const mid = Math.floor(widths.length / 2)
-    let median = widths[mid]
-    if (widths.length % 2 === 0 && mid > 0) {
-      // average of middle two if even number
-      median = (widths[mid - 1] + widths[mid]) / 2
-    }
-
-    // store results
-    lineSlots[i] = [minW, median, maxW]
-
-    // check if line is "significant"
-    const lineSum = widths.reduce((acc, w) => acc + w, 0)
-    const lineWidthRatio = lineSum / usedWidth
-    if (lineWidthRatio >= 0.3 && median < globalSlot) {
-      // if line is significant, update global slot
-      globalSlot = median
-    }
-  })
-
-  return [globalSlot, lineSlots]
-}
-
-/**
- * Rebuild text lines with spacing, using a slot approach.
- *
- * @param lines lines from makeLinesWithIntersection
- * @param left smallest x0 on the page
- * @param globalSlot the "average" or "median" word width
- * @param lineSlots array of [min, median, max] for each line
- * @returns array of strings, one for each line, with spacing
- */
-function renderLinesWithSlots(
-  lines: { words: Word[]; top: number; bottom: number }[],
-  left: number,
-  globalSlot: number,
-  lineSlots: Array<[number, number, number]>,
-  rowHeight: number,
-): string[] {
-  // rowHeight is from your page or average line height measurement
-  const outputLines: string[] = []
-
-  // We also need to keep track of the last line's bottom
+// ----------------------------------------------------
+// Word-to-Word approach (non-tabular fallback)
+// ----------------------------------------------------
+function renderLinesWordToWord(lines: Line[], rowHeight: number): string[] {
+  const output: string[] = []
   let lastLineBottom = -Infinity
 
-  lines.forEach((line, lineIndex) => {
-    // Check vertical gap
+  // A simplistic "globalSlot" from the median wordWidth
+  const allWidths: number[] = []
+  for (const ln of lines) {
+    for (const w of ln.words) {
+      allWidths.push(w.wordWidth)
+    }
+  }
+  allWidths.sort((a, b) => a - b)
+
+  let globalSlot = 10
+  if (allWidths.length > 0) {
+    const mid = Math.floor(allWidths.length / 2)
+    globalSlot = allWidths[mid] || 10
+  }
+
+  // Tweak globalSlot if you want to reduce spacing more aggressively
+  // globalSlot *= 0.5 // e.g., cut spacing in half
+
+  for (const line of lines) {
+    // 1) Insert a blank line if there's a big vertical gap (e.g., > 1.5× rowHeight)
     if (lastLineBottom !== -Infinity) {
       const verticalGap = line.top - lastLineBottom
-      // If this line's top is more than 1.5 × rowHeight below the last line,
-      // let's add a blank line:
       if (verticalGap > 1.5 * rowHeight) {
-        outputLines.push('') // blank line
+        output.push('') // blank line
       }
     }
 
-    // Now do the standard spacing logic for each line
-    // (the same code you have in renderLinesWithSlots, just integrated here)
-    let text = ''
-    const words = line.words.sort((a, b) => a.x0 - b.x0)
+    // 2) Construct line's text
+    let lineText = ''
+    let lastXEnd = line.words.length > 0 ? line.words[0].x0 : 0
 
-    // We can use the globalSlot or a line-specific slot
-    const slot = globalSlot
-    let lastPrintedSlotIndex = 0
-
-    for (const w of words) {
-      const offset = w.x0 - left
-      const slotIndex = Math.floor(offset / slot)
-      let spaceCount = slotIndex - lastPrintedSlotIndex
+    for (const w of line.words) {
+      const gap = w.x0 - lastXEnd
+      let spaceCount = Math.round(gap / globalSlot)
       if (spaceCount < 1) spaceCount = 1
+      if (spaceCount > 25) spaceCount = 25 // clamp
 
-      text += ' '.repeat(spaceCount)
-      text += w.word.replace(/\n/g, ' ')
+      lineText += ' '.repeat(spaceCount)
+      lineText += w.word.replace(/\n/g, ' ')
 
-      const wordSlotSpan = Math.ceil(w.wordWidth / slot)
-      lastPrintedSlotIndex = slotIndex + wordSlotSpan
+      lastXEnd = w.x0 + w.wordWidth
     }
 
-    // Push final line text
-    outputLines.push(text.trimEnd())
-
-    // Update lastLineBottom to this line’s bottom
+    output.push(lineText.trimEnd())
     lastLineBottom = line.bottom
-  })
+  }
 
-  return outputLines
+  return output
 }
 
+// ----------------------------------------------------
+// MAIN "processJSON" to combine everything
+// ----------------------------------------------------
 function processJSON(document: ProcessDocumentResponse) {
   if (!document || !document.pages || document.pages.length === 0) {
     return 'No pages found in the document.'
@@ -371,30 +233,22 @@ function processJSON(document: ProcessDocumentResponse) {
 
   return document.pages
     .map((page) => {
-      // 1) Gather words + minX + maxX
       const [words, left, right, rowHeight] = processTokens(document, page)
+      if (!words.length) return ''
 
-      // 2) Group words into lines
+      // Group words into lines
       const lines = makeLinesWithIntersection(words)
 
-      // 3) Compute a global slot from all lines
-      const [globalSlot, lineSlots] = computeSlots(lines, left, right)
-
-      // 4) Rebuild each line's text using spacing
-      const spacedLines = renderLinesWithSlots(
-        lines,
-        left,
-        globalSlot,
-        lineSlots,
-        rowHeight, // from processTokens
-      )
-
-      // Finally, join them with newlines
+      // Always do the word-to-word approach with vertical gap detection
+      const spacedLines = renderLinesWordToWord(lines, rowHeight)
       return spacedLines.join('\n')
     })
     .join('\n---\n')
 }
 
+// ----------------------------------------------------
+// Final main()
+// ----------------------------------------------------
 async function main() {
   const files = await listJSONs(documentAIJSONPath)
   for await (const file of files) {
